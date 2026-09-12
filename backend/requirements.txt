@@ -1,0 +1,27 @@
+# Silent Ledger backend dependencies
+#
+# Pinned to versions that are known to work together. If you regenerate
+# this file later with `pip freeze`, keep the top-level packages pinned
+# and let transitive dependencies float — pip will resolve them.
+#
+# Deploy target: Railway (Nixpacks). Railway will read this file
+# automatically and install everything before starting the Procfile
+# command. No Docker needed.
+
+# --- Web framework ---------------------------------------------------
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9      # required by FastAPI for UploadFile / Form
+
+# --- Data validation -------------------------------------------------
+pydantic==2.9.2
+
+# --- Graph algorithms ------------------------------------------------
+networkx==3.3
+
+# --- Numerical / data -------------------------------------------------
+numpy==1.26.4
+pandas==2.2.2
+
+# --- Standard library backports --------------------------------------
+# (none required for Python 3.11+)

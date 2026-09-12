@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  @apply bg-ink-950 text-parchment-100 font-sans antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: theme('colors.brass.500');
+  color: theme('colors.ink.950');
+}
+
+/* Visible keyboard focus everywhere, ledger-appropriate: a single hairline, no glow */
+:focus-visible {
+  outline: 2px solid theme('colors.brass.500');
+  outline-offset: 2px;
+}
+
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: theme('colors.ink.500') transparent;
+}
+.scrollbar-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: theme('colors.ink.500');
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* React Flow theming to match the ledger palette */
+.react-flow {
+  background: theme('colors.ink.950');
+}
+.react-flow__edge-path {
+  stroke: theme('colors.ink.500');
+}
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: theme('colors.brass.500');
+}
+.react-flow__controls {
+  border: 1px solid theme('colors.ink.600');
+  border-radius: 4px;
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background: theme('colors.ink.800');
+  border-bottom: 1px solid theme('colors.ink.600');
+  fill: theme('colors.parchment.300');
+}
+.react-flow__attribution {
+  background: transparent;
+  color: theme('colors.parchment.500');
+}
