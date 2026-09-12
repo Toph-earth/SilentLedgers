@@ -296,14 +296,14 @@ def api_generate():
 
 @app.post("/api/upload")
 async def api_upload(
-    transactions_file: UploadFile = File(..., alias="transactions"),
-    accounts_file: Optional[UploadFile] = File(default=None, alias="accounts"),
+    transactions: UploadFile = File(...),
+    accounts: Optional[UploadFile] = File(default=None),
 ):
     """Load a user-uploaded CSV pair and rebuild the pipeline."""
     t0 = time.perf_counter()
 
     try:
-        txn_bytes = await transactions_file.read()
+        txn_bytes = await transactions.read()
     except Exception as e:
         raise HTTPException(
             status_code=400,
@@ -311,9 +311,9 @@ async def api_upload(
         )
 
     acc_bytes: Optional[bytes] = None
-    if accounts_file is not None:
+    if accounts is not None:
         try:
-            acc_bytes = await accounts_file.read()
+            acc_bytes = await accounts.read()
         except Exception as e:
             raise HTTPException(
                 status_code=400,
@@ -321,7 +321,7 @@ async def api_upload(
             )
 
     try:
-        accounts, transactions, ground_truth = load_from_csv(
+        accounts_obj, transactions_obj, ground_truth = load_from_csv(
             txn_bytes, acc_bytes=acc_bytes
         )
     except CSVLoadError as e:
@@ -330,8 +330,8 @@ async def api_upload(
     warnings: List[str] = []
 
     result = _run_pipeline(
-        accounts=accounts,
-        transactions=transactions,
+        accounts=accounts_obj,
+        transactions=transactions_obj,
         ground_truth=ground_truth,
         source="uploaded",
         warnings=warnings,
