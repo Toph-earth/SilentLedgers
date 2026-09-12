@@ -22,7 +22,10 @@ export default function UploadModal({ onClose, onSuccess }) {
     setStatus('loading');
     setError(null);
     try {
-      const result = await api.uploadCsv({ transactionsFile, accountsFile });
+      const result = await api.uploadCsv({
+        transactions: transactionsFile,
+        accounts: accountsFile,
+      });
       onSuccess(result);
     } catch (err) {
       // err.message here is the backend's own detail string, e.g.
