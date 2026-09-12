@@ -1,6 +1,6 @@
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
-import { useTimeline } from '../../../old/hooks/useTimeline.js';
+import { useTimeline } from '../../hooks/useTimeline.js';
 import LoadingState from '../common/LoadingState.jsx';
 import ErrorState from '../common/ErrorState.jsx';
 import EmptyState from '../common/EmptyState.jsx';
