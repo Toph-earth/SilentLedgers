@@ -592,8 +592,8 @@ def _cycle_repeats_within_window(
     for a, b in zip(cycle, cycle[1:] + [cycle[0]]):
         hop_edges: List[dict] = []
         if G.has_edge(a, b):
-            for key in G[a][b]:
-                attrs = G[a][b][key]
+            edge_dict = G.get_edge_data(a, b) or {}
+            for key, attrs in edge_dict.items():
                 ts_str = attrs.get("timestamp")
                 if not ts_str:
                     continue

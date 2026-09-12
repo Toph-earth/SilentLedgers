@@ -55,7 +55,7 @@ from detectors import (
         detect_round_tripping,
         deduplicate_layering,
     )
-DETECTORS_AVAILABLE = True
+_DETECTORS_AVAILABLE = True
 
 try:
     from risk_scorer import score_accounts
