@@ -23,10 +23,16 @@ function delay(ms) {
 
 // Normalizes axios errors and mock errors into one shape components can
 // branch on: { message, status }.
+//
+// The live backend returns FastAPI-style error bodies — { "detail": "..." }
+// — not { "message": "..." }. `detail` is checked first so real 400/404
+// responses surface their actual human-readable text instead of falling
+// through to the generic "Request failed".
 function toAppError(err) {
   if (err?.isAxiosError) {
+    const body = err.response?.data;
     return {
-      message: err.response?.data?.message || err.message || 'Request failed',
+      message: body?.detail || body?.message || err.message || 'Request failed',
       status: err.response?.status ?? null,
     };
   }
@@ -99,16 +105,37 @@ export const api = {
     }
   },
 
-  // Triggers the backend to generate a fresh batch of mock transactions
-  // and re-run detection. In mock mode this is a no-op that resolves
-  // immediately so the button still feels responsive.
+  // Regenerates the synthetic dataset server-side (1-3s per the contract).
+  // Callers should show a loading state for the duration and refetch
+  // summary/accounts/patterns/graph once this resolves.
   async regenerate() {
     try {
       if (USE_MOCK) {
-        await delay(400);
-        return { status: 'ok', mock: true };
+        await delay(900);
+        return { accountsCreated: 200, transactionsCreated: 3006, warnings: [], generationTimeMs: 842 };
       }
       const { data } = await http.post('/api/generate');
+      return data;
+    } catch (err) {
+      throw toAppError(err);
+    }
+  },
+
+  // Uploads a transactions CSV (required) and an accounts CSV (optional),
+  // replacing the dataset server-side. Not supported in mock mode — there's
+  // no CSV parser to demo against, so this fails clearly rather than
+  // pretending to succeed.
+  async uploadCsv({ transactionsFile, accountsFile } = {}) {
+    try {
+      if (USE_MOCK) {
+        throw { message: 'CSV upload needs the live backend — set VITE_USE_MOCK=false in .env first.' };
+      }
+      const form = new FormData();
+      form.append('transactions', transactionsFile);
+      if (accountsFile) form.append('accounts', accountsFile);
+      const { data } = await http.post('/api/upload', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
       return data;
     } catch (err) {
       throw toAppError(err);

@@ -8,6 +8,7 @@ import RiskNode from './RiskNode.jsx';
 import LoadingState from '../common/LoadingState.jsx';
 import ErrorState from '../common/ErrorState.jsx';
 import EmptyState from '../common/EmptyState.jsx';
+import { normalizeRisk, riskTier } from '../../utils/risk.js';
 
 const nodeTypes = { risk: RiskNode };
 
@@ -25,7 +26,9 @@ const LABEL_THRESHOLD = 15000;
 function capNodes(nodes, edges) {
   if (nodes.length <= NODE_CAP) return { nodes, edges, truncated: false, totalBeforeCap: nodes.length };
 
-  const kept = [...nodes].sort((a, b) => b.data.risk - a.data.risk).slice(0, NODE_CAP);
+  const kept = [...nodes]
+    .sort((a, b) => normalizeRisk(b.data.risk) - normalizeRisk(a.data.risk))
+    .slice(0, NODE_CAP);
   const keptIds = new Set(kept.map((n) => n.id));
   const keptEdges = edges.filter((e) => keptIds.has(e.source) && keptIds.has(e.target));
 
@@ -55,12 +58,12 @@ function toFlowEdges(edges) {
   });
 }
 
-export default function TransactionGraph({ selectedPatternId, selectedAccountId, onSelectAccount }) {
-  const { status, data, error, refetch } = useGraph({ patternId: selectedPatternId });
+export default function TransactionGraph({ selectedPatternId, selectedAccountId, onSelectAccount, dataVersion }) {
+  const { status, data, error, refetch } = useGraph({ patternId: selectedPatternId, refreshKey: dataVersion });
 
-  const { flowNodes, flowEdges, truncated, totalBeforeCap } = useMemo(() => {
+  const { flowNodes, flowEdges, truncated, totalBeforeCap, serverTruncated } = useMemo(() => {
     if (!data || data.nodes.length === 0) {
-      return { flowNodes: [], flowEdges: [], truncated: false, totalBeforeCap: 0 };
+      return { flowNodes: [], flowEdges: [], truncated: false, totalBeforeCap: 0, serverTruncated: false };
     }
     const capped = capNodes(data.nodes, data.edges);
     const positioned = computeLayout(capped.nodes, capped.edges).map((n) => ({
@@ -72,6 +75,11 @@ export default function TransactionGraph({ selectedPatternId, selectedAccountId,
       flowEdges: toFlowEdges(capped.edges),
       truncated: capped.truncated,
       totalBeforeCap: capped.totalBeforeCap,
+      // The backend already caps /api/graph to its highest-value accounts
+      // (maxNodes=50 by default) before this ever reaches our own 60-node
+      // cap above. Both banners are informational, not stacked — client-side
+      // truncation takes priority since it's the more specific number.
+      serverTruncated: Boolean(data.meta?.truncated),
     };
   }, [data, selectedAccountId]);
 
@@ -82,6 +90,11 @@ export default function TransactionGraph({ selectedPatternId, selectedAccountId,
         {truncated && (
           <span className="rounded border border-brass-600 bg-ink-800 px-2 py-0.5 text-[11px] text-brass-400">
             Showing top {NODE_CAP} of {totalBeforeCap} accounts by risk score
+          </span>
+        )}
+        {!truncated && serverTruncated && (
+          <span className="rounded border border-brass-600 bg-ink-800 px-2 py-0.5 text-[11px] text-brass-400">
+            Server capped to the highest-value accounts and edges
           </span>
         )}
       </div>
@@ -113,7 +126,10 @@ export default function TransactionGraph({ selectedPatternId, selectedAccountId,
             <MiniMap
               pannable
               zoomable
-              nodeColor={(n) => (n.data.risk >= 75 ? '#D14F4F' : n.data.risk >= 45 ? '#D69A2D' : '#3FA867')}
+              nodeColor={(n) => {
+                const tier = riskTier(n.data.risk);
+                return tier === 'high' ? '#D14F4F' : tier === 'mid' ? '#D69A2D' : '#3FA867';
+              }}
               maskColor="rgba(11,14,20,0.75)"
               style={{ background: '#131820', border: '1px solid #262E3D' }}
             />
