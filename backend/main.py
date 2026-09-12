@@ -33,7 +33,12 @@ Assumptions about other modules:
   - graph_builder.py exposes build_graph(transactions) and
     export_subgraph(G, center_id=None, ...).
   - detectors.py exposes detect_structuring(G), detect_layering(G),
-    detect_round_tripping(G).
+    detect_round_tripping(G), and deduplicate_layering(layering_matches,
+    round_tripping_matches) — the round-tripping/layering overlap fix.
+    This file no longer keeps its own copy of that dedup rule (see
+    _run_pipeline below); it calls detectors.deduplicate_layering so
+    main.py and verify_detection.py can never drift out of sync on what
+    "prefer round_tripping over layering" actually means.
   - risk_scorer.py is assumed to exist by the time detection is wired.
     Until then, a local stub computes a placeholder score so the API
     still returns real shapes.
@@ -70,6 +75,7 @@ try:
         detect_structuring,
         detect_layering,
         detect_round_tripping,
+        deduplicate_layering,
     )
     _DETECTORS_AVAILABLE = True
 except ImportError:
@@ -180,7 +186,6 @@ def _fallback_score(
         contributing_matches=[m.match_id for m in matches],
     )
 
-
 def _run_pipeline(
     accounts: List[Account],
     transactions: List[Transaction],
@@ -206,12 +211,17 @@ def _run_pipeline(
     #    API still returns coherent shapes.
     matches: List[PatternMatch] = []
     if _DETECTORS_AVAILABLE:
-        # Detectors return matches per pattern family. Concatenate.
-        matches = (
-            detect_structuring(G)
-            + detect_layering(G)
-            + detect_round_tripping(G)
+        # Run round_tripping before layering, not concatenate-then-filter:
+        # deduplicate_layering needs the round_tripping matches in hand to
+        # know which transactions are already claimed, and it only ever
+        # drops from layering_matches — round_tripping and structuring
+        # pass through untouched.
+        structuring_matches = detect_structuring(G)
+        round_tripping_matches = detect_round_tripping(G)
+        layering_matches = deduplicate_layering(
+            detect_layering(G), round_tripping_matches
         )
+        matches = structuring_matches + layering_matches + round_tripping_matches
 
     # 3. Group matches by account (used by scoring and explain endpoint).
     matches_by_account = _build_matches_by_account(matches)
