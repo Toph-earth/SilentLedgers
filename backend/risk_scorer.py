@@ -16,8 +16,10 @@ Score composition (0-100):
 
     match_component      0-65   weighted, saturating aggregation of every
                                 PatternMatch involving this account
-    centrality_component 0-20   betweenness centrality percentile — rewards
-                                accounts that sit on paths between otherwise
+    centrality_component 0-20   betweenness centrality, measured as excess
+                                over the median centrality of clean
+                                accounts — rewards matched accounts that
+                                sit on paths between otherwise
                                 disconnected parts of the network
     volume_component     0-15   percentile rank of total flow through the
                                 account — the weakest signal, capped low
@@ -38,10 +40,14 @@ Aggregation uses a saturating exponential rather than a raw sum so that
 an account in two overlapping matches is not double-punished, and the
 tenth weak match barely moves the needle past the first strong one.
 
-Centrality is betweenness, not degree. Degree rewards high-volume
-accounts, which the volume component already covers. Betweenness rewards
-accounts that sit on paths between otherwise-disconnected parts of the
-network — which is exactly what a layering intermediary looks like.
+Centrality is betweenness, not degree, and it is centered on clean
+accounts rather than measured in absolute terms. Absolute centrality
+rewards an account for being well-connected regardless of whether it
+was flagged — but a well-connected account with a clean record is just
+a bank's operating account, not a suspect. Subtracting the median
+centrality of unmatched accounts makes the bonus measure "how much
+more central is this account than a typical clean account," which is
+what actually correlates with layering behavior.
 
 Determinism
 -----------
@@ -84,7 +90,7 @@ PATTERN_BASE_WEIGHT: Dict[PatternType, float] = {
 
 # Match component: 0 to MATCH_COMPONENT_MAX, saturating.
 MATCH_COMPONENT_MAX = 65.0
-MATCH_SATURATION = 0.9   # weighted_sum at which we reach ~63% of the max
+MATCH_SATURATION = 1.4   # weighted_sum at which we reach ~63% of the max
 
 # Centrality component: 0 to CENTRALITY_COMPONENT_MAX.
 CENTRALITY_COMPONENT_MAX = 20.0
@@ -146,6 +152,18 @@ def score_accounts(
     centrality = _betweenness_centrality(G) if G is not None else {}
     max_centrality = max(centrality.values(), default=0.0)
 
+    # Median betweenness across accounts with no matches. Used to center
+    # the centrality bonus: being central *and* matched is suspicious;
+    # being central with a clean record is just being a bank's operating
+    # account.
+    clean_bc_values = [
+        centrality.get(acc.account_id, 0.0)
+        for acc in accounts
+        if not matches_by_account.get(acc.account_id)
+    ]
+    clean_median_bc = _median(clean_bc_values) if clean_bc_values else 0.0
+    centrality_range = max(max_centrality - clean_median_bc, 1e-9)
+
     flows = _account_flows(accounts, G)
     flow_percentiles = _percentile_ranks(flows)
 
@@ -165,11 +183,13 @@ def score_accounts(
             else 0.0
         )
 
+        # Centrality: only fires for matched accounts, and only on the
+        # excess over the clean median. A clean central account gets 0.
         centrality_component = 0.0
-        if max_centrality > 0:
-            centrality_component = (
-                CENTRALITY_COMPONENT_MAX
-                * (centrality.get(acc_id, 0.0) / max_centrality)
+        if acc_matches and centrality.get(acc_id, 0.0) > clean_median_bc:
+            excess = centrality[acc_id] - clean_median_bc
+            centrality_component = CENTRALITY_COMPONENT_MAX * min(
+                1.0, excess / centrality_range
             )
 
         volume_component = (
@@ -312,6 +332,18 @@ def _percentile_ranks(values: Dict[str, float]) -> Dict[str, float]:
             ranks[items[k][0]] = pct
         i = j + 1
     return ranks
+
+
+def _median(values: Sequence[float]) -> float:
+    """Median of a sequence. Returns 0.0 for an empty sequence."""
+    if not values:
+        return 0.0
+    s = sorted(values)
+    n = len(s)
+    mid = n // 2
+    if n % 2:
+        return s[mid]
+    return (s[mid - 1] + s[mid]) / 2.0
 
 
 def _clip(value: float, lo: float, hi: float) -> float:
