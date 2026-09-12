@@ -160,8 +160,7 @@ def _fallback_score(
         contributing_matches=[m.match_id for m in matches],
     )
 
-@app.post("/api/generate")
-async def _run_pipeline(
+def _run_pipeline(
     accounts: List[Account],
     transactions: List[Transaction],
     ground_truth: Dict[str, str],
@@ -197,12 +196,6 @@ async def _run_pipeline(
                 acc, matches_by_account.get(acc.account_id, []), G
             )
 
-    # Inside main.py -> _run_pipeline()
-    structuring_matches = detect_structuring(G)
-    round_tripping_matches = detect_round_tripping(G)
-    layering_matches = deduplicate_layering(detect_layering(G), round_tripping_matches)
-
-    print(f"DEBUG: Structuring={len(structuring_matches)}, Layering={len(layering_matches)}, RT={len(round_tripping_matches)}")
     # 5. Precompute the summary KPI metrics.
     summary = _compute_summary(accounts, matches, risk_by_account, transactions)
 
