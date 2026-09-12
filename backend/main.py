@@ -160,8 +160,8 @@ def _fallback_score(
         contributing_matches=[m.match_id for m in matches],
     )
 
-
-def _run_pipeline(
+@app.post("/api/generate")
+async def _run_pipeline(
     accounts: List[Account],
     transactions: List[Transaction],
     ground_truth: Dict[str, str],
