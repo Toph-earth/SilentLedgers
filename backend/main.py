@@ -172,8 +172,6 @@ def _run_pipeline(
 
     # 1. Build the graph.
     G = build_graph(transactions)
-    print("DEBUG marker: PIPELINE-CHECK-9f21", flush=True)
-    print(f"DEBUG graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges", flush=True)
 
     # 2. Run detectors if available.
     matches: List[PatternMatch] = []
