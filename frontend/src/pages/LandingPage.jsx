@@ -33,10 +33,10 @@ export default function LandingPage({ onEnter }) {
         <span className="font-mono text-xs uppercase tracking-widest text-brass-500">
           transaction network analysis
         </span>
-        <h1 className="mt-3 font-serif text-4xl text-parchment-100 sm:text-5xl">Silent Ledger</h1>
+        <h1 className="mt-3 font-serif text-4xl text-parchment-100 sm:text-5xl">Silent Ledgers</h1>
         <p className="mx-auto mt-4 max-w-lg text-sm leading-relaxed text-parchment-500">
           No single transaction looks wrong. The crime only shows up as a shape in the
-          network — a hub, a chain, a loop. Silent Ledger finds that shape.
+          network — a hub, a chain, a loop. Silent Ledgers finds that shape.
         </p>
 
         <button
