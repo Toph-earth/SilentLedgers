@@ -172,7 +172,8 @@ def _run_pipeline(
 
     # 1. Build the graph.
     G = build_graph(transactions)
-    print(f"DEBUG graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+    print("DEBUG marker: PIPELINE-CHECK-9f21", flush=True)
+    print(f"DEBUG graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges", flush=True)
 
     # 2. Run detectors if available.
     matches: List[PatternMatch] = []
@@ -183,6 +184,14 @@ def _run_pipeline(
             detect_layering(G), round_tripping_matches
         )
         matches = structuring_matches + layering_matches + round_tripping_matches
+    print(
+        f"DEBUG detectors: _DETECTORS_AVAILABLE={_DETECTORS_AVAILABLE}  "
+        f"structuring={len(matches) and len(structuring_matches)}  "
+        f"layering={len(matches) and len(layering_matches)}  "
+        f"round_tripping={len(matches) and len(round_tripping_matches)}  "
+        f"total={len(matches)}",
+        flush=True,
+    )
 
     # 3. Group matches by account.
     matches_by_account = _build_matches_by_account(matches)
