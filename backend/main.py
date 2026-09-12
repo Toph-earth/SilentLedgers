@@ -18,35 +18,16 @@ What this file does:
 
 What this file explicitly does NOT do:
   - Detect patterns (detectors.py).
-  - Score risk (risk_scorer.py — may not exist yet; stubbed inline below).
+  - Score risk (risk_scorer.py).
   - Parse CSVs (csv_loader.py).
   - Build graphs (graph_builder.py).
-  - Know anything about React Flow's layout. The frontend runs dagre on
-    the positions we return; we send position {x: 0, y: 0} and let it
-    overwrite.
-
-Assumptions about other modules:
-  - models.py exposes Account, Transaction, PatternType, PatternMatch,
-    RiskScore, and the response shapes: AccountSummary, GraphNode,
-    GraphEdge, GraphPayload, ExplanationPayload, RegenerateResponse,
-    HealthResponse.
-  - graph_builder.py exposes build_graph(transactions) and
-    export_subgraph(G, center_id=None, ...).
-  - detectors.py exposes detect_structuring(G), detect_layering(G),
-    detect_round_tripping(G), and deduplicate_layering(layering_matches,
-    round_tripping_matches) — the round-tripping/layering overlap fix.
-    This file no longer keeps its own copy of that dedup rule (see
-    _run_pipeline below); it calls detectors.deduplicate_layering so
-    main.py and verify_detection.py can never drift out of sync on what
-    "prefer round_tripping over layering" actually means.
-  - risk_scorer.py is assumed to exist by the time detection is wired.
-    Until then, a local stub computes a placeholder score so the API
-    still returns real shapes.
+  - Know anything about React Flow's layout.
 """
 
 from __future__ import annotations
 
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -67,9 +48,7 @@ from csv_loader import CSVLoadError, load_from_csv
 from data_generator import generate_dataset
 from graph_builder import build_graph, export_subgraph
 
-# Detectors and scorer are imported lazily so this file can still boot
-# and serve /api/health even if those modules are not written yet. The
-# _run_pipeline function handles their absence gracefully.
+# Detectors and scorer imports
 try:
     from detectors import (
         detect_structuring,
@@ -89,30 +68,8 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Application setup
-# ---------------------------------------------------------------------------
-
-app = FastAPI(title="Silent Ledger", version="0.1.0")
-
-# CORS: allow the Vercel frontend to reach Railway. During development
-# the frontend runs on localhost:5173, so allow that too.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # tighten after the hackathon
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ---------------------------------------------------------------------------
 # In-memory cache
 # ---------------------------------------------------------------------------
-# A single dict is the entire state of the backend. The pipeline writes
-# it, every read endpoint reads it. There is no database. Regeneration
-# replaces the contents atomically at the end of the pipeline (see
-# _run_pipeline), so partially-populated reads cannot happen.
-
 _CACHE: Dict[str, object] = {
     "accounts": [],              # List[Account]
     "transactions": [],          # List[Transaction]
@@ -134,6 +91,36 @@ def _cache_get(key: str):
 
 def _cache_set(**kwargs) -> None:
     _CACHE.update(kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Application lifespan & setup
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Populate the cache on boot before processing any incoming HTTP requests."""
+    accounts, transactions, ground_truth = generate_dataset()
+    _run_pipeline(
+        accounts=accounts,
+        transactions=transactions,
+        ground_truth=ground_truth,
+        source="generated",
+    )
+    yield
+    _CACHE.clear()
+
+
+app = FastAPI(title="Silent Ledger", version="0.1.0", lifespan=lifespan)
+
+# CORS: allow the Vercel frontend to reach Railway.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -163,13 +150,7 @@ def _fallback_score(
     matches: List[PatternMatch],
     G: Optional[nx.MultiDiGraph],
 ) -> RiskScore:
-    """Placeholder scorer used until risk_scorer.py exists.
-
-    Produces a RiskScore with a simple weighted sum of match severities.
-    This lets the rest of the API return real shapes so the frontend can
-    be built in parallel. Once risk_scorer.py lands, _run_pipeline calls
-    it instead and this function goes unused.
-    """
+    """Fallback scorer if risk_scorer.py is unavailable."""
     if not matches:
         return RiskScore(
             account_id=account.account_id,
@@ -177,14 +158,13 @@ def _fallback_score(
             contributing_matches=[],
         )
     weighted = sum(m.severity for m in matches)
-    # Scale to 0-100, capped. Not tuned — just non-zero so the UI has
-    # something real to sort by.
     score = int(min(100, round(weighted * 40)))
     return RiskScore(
         account_id=account.account_id,
         score=score,
         contributing_matches=[m.match_id for m in matches],
     )
+
 
 def _run_pipeline(
     accounts: List[Account],
@@ -193,29 +173,15 @@ def _run_pipeline(
     source: str,
     warnings: Optional[List[str]] = None,
 ) -> Dict[str, object]:
-    """Build graph, run detectors, score risk, and populate the cache.
-
-    This is the single code path shared by /api/generate and /api/upload.
-    The two endpoints differ only in how they produce (accounts,
-    transactions, ground_truth). Everything from here down is identical.
-
-    Writes into _CACHE in one shot at the end so readers never observe a
-    half-updated state.
-    """
+    """Build graph, run detectors, score risk, and populate the cache atomically."""
     warnings = warnings or []
 
     # 1. Build the graph.
     G = build_graph(transactions)
 
-    # 2. Run detectors if available; otherwise leave matches empty so the
-    #    API still returns coherent shapes.
+    # 2. Run detectors if available.
     matches: List[PatternMatch] = []
     if _DETECTORS_AVAILABLE:
-        # Run round_tripping before layering, not concatenate-then-filter:
-        # deduplicate_layering needs the round_tripping matches in hand to
-        # know which transactions are already claimed, and it only ever
-        # drops from layering_matches — round_tripping and structuring
-        # pass through untouched.
         structuring_matches = detect_structuring(G)
         round_tripping_matches = detect_round_tripping(G)
         layering_matches = deduplicate_layering(
@@ -223,14 +189,12 @@ def _run_pipeline(
         )
         matches = structuring_matches + layering_matches + round_tripping_matches
 
-    # 3. Group matches by account (used by scoring and explain endpoint).
+    # 3. Group matches by account.
     matches_by_account = _build_matches_by_account(matches)
 
     # 4. Score risk per account.
     risk_by_account: Dict[str, RiskScore] = {}
     if _SCORER_AVAILABLE:
-        # risk_scorer.py is expected to expose score_accounts(accounts,
-        # matches_by_account, G) -> Dict[str, RiskScore].
         risk_by_account = score_accounts(accounts, matches_by_account, G)
     else:
         for acc in accounts:
@@ -238,13 +202,13 @@ def _run_pipeline(
                 acc, matches_by_account.get(acc.account_id, []), G
             )
 
-    # 5. Precompute the summary (aggregation on request is not allowed).
+    # 5. Precompute the summary KPI metrics.
     summary = _compute_summary(accounts, matches, risk_by_account, transactions)
 
-    # 6. Index patterns for /api/graph?patternId=.
+    # 6. Index patterns for fast graph lookups.
     patterns_indexed = _build_patterns_index(matches)
 
-    # 7. Atomic swap into the cache.
+    # 7. Atomic update into the global cache.
     generated_at = datetime.now(timezone.utc)
     _cache_set(
         accounts=accounts,
@@ -277,21 +241,13 @@ def _compute_summary(
     risk_by_account: Dict[str, RiskScore],
     transactions: List[Transaction],
 ) -> dict:
-    """Precompute the KPI strip. Runs once per pipeline, not per request.
-
-    Fields: totalAccounts, flaggedAccounts, activePatterns,
-    totalFlaggedVolume30d, highestRiskScore, generatedAt.
-    """
+    """Precompute the KPI strip. Runs once per pipeline run."""
     flagged_ids = {
         acc_id
         for acc_id, rs in risk_by_account.items()
-        if rs.score >= 60  # flag threshold; tune alongside risk_scorer
+        if rs.score >= 60
     }
 
-    # Total volume in the last 30 days among transactions that touch a
-    # flagged account. We intentionally do not filter by "was this
-    # transaction part of a match" — an investigator cares about
-    # everything flowing through a flagged account.
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     volume_30d = 0.0
     for t in transactions:
@@ -318,11 +274,7 @@ def _compute_summary(
 
 @app.post("/api/generate")
 def api_generate():
-    """Regenerate the synthetic dataset and rebuild the pipeline.
-
-    Triggered manually before the demo, or on first boot. Not called by
-    any UI component. Replaces the entire in-memory cache.
-    """
+    """Regenerate the synthetic dataset and rebuild the pipeline."""
     t0 = time.perf_counter()
     accounts, transactions, ground_truth = generate_dataset()
     result = _run_pipeline(
@@ -345,24 +297,9 @@ async def api_upload(
     transactions_file: UploadFile = File(..., alias="transactions"),
     accounts_file: Optional[UploadFile] = File(default=None, alias="accounts"),
 ):
-    """Load a user-uploaded CSV pair and rebuild the pipeline.
-
-    Mirrors /api/generate's output shape. The only difference is how
-    (accounts, transactions, ground_truth) is obtained — from CSV bytes
-    instead of the generator. Everything downstream is the same
-    _run_pipeline call.
-
-    Accepts multipart form data with fields `transactions` (required)
-    and `accounts` (optional). If accounts is omitted, accounts are
-    derived from the transaction endpoints.
-
-    Returns 400 with the CSVLoadError message on validation failure.
-    Never returns a 500 for malformed input.
-    """
+    """Load a user-uploaded CSV pair and rebuild the pipeline."""
     t0 = time.perf_counter()
 
-    # Read bytes. Read both fully before parsing so a failure on the
-    # second file does not leave the first half-consumed.
     try:
         txn_bytes = await transactions_file.read()
     except Exception as e:
@@ -381,7 +318,6 @@ async def api_upload(
                 detail=f"Could not read accounts file: {e}",
             )
 
-    # Parse. Any CSVLoadError becomes a 400 with the specific message.
     try:
         accounts, transactions, ground_truth = load_from_csv(
             txn_bytes, acc_bytes=acc_bytes
@@ -390,8 +326,6 @@ async def api_upload(
         raise HTTPException(status_code=400, detail=str(e))
 
     warnings: List[str] = []
-    # A future enhancement: csv_loader may return skipped-row counts.
-    # For now, no warnings are produced.
 
     result = _run_pipeline(
         accounts=accounts,
@@ -411,7 +345,7 @@ async def api_upload(
 
 @app.get("/api/health")
 def api_health():
-    """Railway health check target. No logic, no cache access."""
+    """Railway health check target."""
     return {"status": "ok"}
 
 
@@ -437,11 +371,7 @@ def api_summary():
 
 @app.get("/api/accounts")
 def api_accounts(minRisk: Optional[int] = Query(default=None, ge=0, le=100)):
-    """Return the account table, sorted by risk score descending.
-
-    Optional minRisk filter is honored even though the frontend does not
-    send it yet — costs nothing and makes the endpoint self-sufficient.
-    """
+    """Return the account table, sorted by risk score descending."""
     accounts: List[Account] = _cache_get("accounts")  # type: ignore
     if not accounts:
         raise HTTPException(
@@ -453,10 +383,7 @@ def api_accounts(minRisk: Optional[int] = Query(default=None, ge=0, le=100)):
     matches_by_account: Dict[str, List[PatternMatch]] = _cache_get("matches_by_account")  # type: ignore
     graph: nx.MultiDiGraph = _cache_get("graph")  # type: ignore
 
-    # Precompute net flow and 30-day volume per account from the graph.
-    # These are cheap because graph_builder already rolled up totals.
     out: List[dict] = []
-    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
 
     for acc in accounts:
         rs = risk_by_account.get(
@@ -472,8 +399,6 @@ def api_accounts(minRisk: Optional[int] = Query(default=None, ge=0, le=100)):
         net_flow = total_in - total_out
         txn_count = int(node_attrs.get("txn_count", 0))
 
-        # Determine the dominant flag type: the pattern with highest
-        # severity among this account's matches, or None.
         acc_matches = matches_by_account.get(acc.account_id, [])
         flag_type: Optional[PatternType] = None
         if acc_matches:
@@ -484,7 +409,7 @@ def api_accounts(minRisk: Optional[int] = Query(default=None, ge=0, le=100)):
             {
                 "id": acc.account_id,
                 "name": acc.name,
-                "country": "US",  # placeholder; schema has no country yet
+                "country": "US",
                 "riskScore": rs.score,
                 "flagged": rs.score >= 60,
                 "totalVolume30d": round(total_in + total_out, 2),
@@ -508,12 +433,7 @@ def api_graph(
     maxNodes: int = Query(default=50, ge=5, le=200),
     maxEdges: int = Query(default=150, ge=5, le=500),
 ):
-    """Return the graph in React Flow shape.
-
-    With patternId: return only that pattern's subgraph (the accounts
-    involved and the transactions between them).
-    Without patternId: return the full graph, trimmed by degree.
-    """
+    """Return the graph in React Flow shape."""
     graph: nx.MultiDiGraph = _cache_get("graph")  # type: ignore
     if graph is None or graph.number_of_nodes() == 0:
         raise HTTPException(
@@ -534,10 +454,6 @@ def api_graph(
                 status_code=404,
                 detail=f"Pattern '{patternId}' not found.",
             )
-        # Restrict the graph to accounts involved in this pattern. Use
-        # export_subgraph with center=None after building a filtered
-        # view — simplest correct implementation is to build a
-        # subgraph of the MultiDiGraph limited to the involved accounts.
         involved = set(match.accounts_involved)
         sub = graph.subgraph(involved).copy()
         payload = export_subgraph(
@@ -556,9 +472,6 @@ def api_graph(
             risk_lookup=risk_lookup,
         )
 
-    # Convert to React Flow shape. The frontend runs dagre, so position
-    # is a placeholder. Stable IDs are load-bearing: edges[].id must not
-    # change between calls for the same logical edge.
     rf_nodes = [
         {
             "id": n["id"],
@@ -573,7 +486,7 @@ def api_graph(
     ]
     rf_edges = [
         {
-            "id": f"{e['source']}->{e['target']}",  # stable across calls
+            "id": f"{e['source']}->{e['target']}",
             "source": e["source"],
             "target": e["target"],
             "data": {
@@ -602,16 +515,12 @@ def api_graph(
 
 @app.get("/api/patterns")
 def api_patterns():
-    """Return every detected pattern, sorted by risk score descending.
-
-    Doubles as the source of valid patternId values for /api/graph.
-    """
+    """Return every detected pattern, sorted by risk score descending."""
     matches: List[PatternMatch] = _cache_get("matches")  # type: ignore
     risk_by_account: Dict[str, RiskScore] = _cache_get("risk_by_account")  # type: ignore
 
     rows: List[dict] = []
     for m in matches:
-        # Pattern-level risk: mean of member accounts' risk scores.
         member_scores = [
             risk_by_account.get(acc_id, RiskScore(account_id=acc_id, score=0, contributing_matches=[])).score
             for acc_id in m.accounts_involved
@@ -651,13 +560,7 @@ def _human_label_for(m: PatternMatch) -> str:
 
 @app.get("/api/account/{account_id}/timeline")
 def api_account_timeline(account_id: str, days: int = Query(default=30, ge=1, le=180)):
-    """Daily volume and transaction count for a single account.
-
-    Called only after a user selects an account from an already-loaded
-    list. Never on initial load. Returns one entry per day with no gaps —
-    inactive days return volume: 0 and transactionCount: 0 rather than
-    being omitted, so the frontend chart does not have to fill gaps.
-    """
+    """Daily volume and transaction count for a single account."""
     graph: nx.MultiDiGraph = _cache_get("graph")  # type: ignore
     if graph is None or graph.number_of_nodes() == 0:
         raise HTTPException(
@@ -673,20 +576,14 @@ def api_account_timeline(account_id: str, days: int = Query(default=30, ge=1, le
             detail=f"Account '{account_id}' not found.",
         )
 
-    # Bucket transactions per day. Use the graph's edge list rather than
-    # the flat transaction list so we only touch edges involving this
-    # account. Both directions count toward "volume touching this
-    # account" — the KPI on the frontend is "activity", not "money in".
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days - 1)
 
-    # Pre-seed every day with zero so gaps are explicit.
     buckets: Dict[str, Dict[str, float]] = {}
     for i in range(days):
         day = (start + timedelta(days=i)).date().isoformat()
         buckets[day] = {"volume": 0.0, "transactionCount": 0}
 
-    # Walk the graph edges once. O(E) is fine at our scale.
     for u, v, attrs in graph.edges(data=True):
         if u != account_id and v != account_id:
             continue
@@ -715,23 +612,3 @@ def api_account_timeline(account_id: str, days: int = Query(default=30, ge=1, le
     ]
 
     return {"accountId": account_id, "points": points}
-
-
-# ---------------------------------------------------------------------------
-# Startup: generate once so the demo has data even if nobody calls POST
-# ---------------------------------------------------------------------------
-
-@app.on_event("startup")
-def _startup_generate():
-    """Populate the cache on boot so the frontend has something to show.
-
-    /api/generate can still be called manually to regenerate. This just
-    removes the "empty until you POST" state for a demo-friendly boot.
-    """
-    accounts, transactions, ground_truth = generate_dataset()
-    _run_pipeline(
-        accounts=accounts,
-        transactions=transactions,
-        ground_truth=ground_truth,
-        source="generated",
-    )
