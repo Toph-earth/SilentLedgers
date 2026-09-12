@@ -49,16 +49,13 @@ from data_generator import generate_dataset
 from graph_builder import build_graph, export_subgraph
 
 # Detectors and scorer imports
-try:
-    from detectors import (
+from detectors import (
         detect_structuring,
         detect_layering,
         detect_round_tripping,
         deduplicate_layering,
     )
-    _DETECTORS_AVAILABLE = True
-except ImportError:
-    _DETECTORS_AVAILABLE = False
+DETECTORS_AVAILABLE = True
 
 try:
     from risk_scorer import score_accounts
