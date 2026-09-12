@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api, isMockMode } from '../../api/client.js';
+import { api } from '../../api/client.js';
 import UploadModal from '../upload/UploadModal.jsx';
 
 // Both actions here replace the entire in-memory dataset server-side
@@ -38,8 +38,7 @@ export default function DataControls({ onDataChanged }) {
 
       <button
         onClick={handleRegenerate}
-        disabled={regenerating || isMockMode}
-        title={isMockMode ? 'Set VITE_USE_MOCK=false to regenerate real data' : undefined}
+        disabled={regenerating}
         className="rounded border border-ink-600 px-3 py-1.5 text-xs text-parchment-300 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-40"
       >
         {regenerating ? 'Regenerating…' : 'Regenerate'}
@@ -47,8 +46,6 @@ export default function DataControls({ onDataChanged }) {
 
       <button
         onClick={() => setUploadOpen(true)}
-        disabled={isMockMode}
-        title={isMockMode ? 'Set VITE_USE_MOCK=false to upload real data' : undefined}
         className="rounded border border-brass-600 bg-ink-800 px-3 py-1.5 text-xs text-brass-400 transition-colors hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-40"
       >
         Upload CSV

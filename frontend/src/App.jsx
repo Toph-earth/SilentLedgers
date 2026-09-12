@@ -6,7 +6,7 @@ import PatternList from './components/patterns/PatternList.jsx';
 import TransactionGraph from './components/graph/TransactionGraph.jsx';
 import TimelineChart from './components/timeline/TimelineChart.jsx';
 import AccountTable from './components/accounts/AccountTable.jsx';
-import { isMockMode } from './api/client.js';
+
 
 // Layout at 1280px (the demo resolution):
 //   header            1280 x 72,  fixed
@@ -33,14 +33,6 @@ export default function App() {
   return (
     <div className="flex h-screen flex-col bg-ink-950">
       <KPIBar onDataChanged={() => setDataVersion((v) => v + 1)} />
-
-      {isMockMode && (
-        <div className="border-b border-ink-600 bg-ink-800 px-6 py-1 text-center text-[11px] text-brass-400">
-          Mock data mode — set VITE_USE_MOCK=false in .env to use the live backend
-          (Regenerate/Upload are disabled in this mode)
-        </div>
-      )}
-
       <main className="flex min-h-0 flex-1">
         <section className="w-[260px] shrink-0 border-r border-ink-600 bg-ink-900">
           <PatternList
