@@ -16,7 +16,7 @@ import AccountTable from './components/accounts/AccountTable.jsx';
 // See GUIDE.md section 3 for the derivation.
 
 export default function App() {
-  const [view, setView] = useState('landing'); // 'landing' | 'dashboard'
+  const [view, setView] = useState('dashboard'); // 'landing' | 'dashboard'
   const [selectedPatternId, setSelectedPatternId] = useState(null);
   const [selectedAccountId, setSelectedAccountId] = useState(null);
 

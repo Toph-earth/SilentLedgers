@@ -1,8 +1,7 @@
 // Single API client layer. Every network call in the app goes through the
 // `api` object exported below — no component calls axios or fetch directly.
 //
-// Set VITE_API_BASE_URL to point at the backend. Mock mode has been removed;
-// data comes from the backend, including the CSV upload flow.
+// Set VITE_API_BASE_URL to point at the backend. Mock mode has been removed.
 
 import axios from 'axios';
 
@@ -14,11 +13,19 @@ const http = axios.create({
 });
 
 // Normalizes axios errors into one shape components can branch on:
-// { message, status }.
+// { message, status }. FastAPI returns validation and error messages under
+// `detail`, so we check that first.
 function toAppError(err) {
   if (err?.isAxiosError) {
+    const detail = err.response?.data?.detail;
+    const message =
+      (typeof detail === 'string' && detail) ||
+      detail?.[0]?.msg ||
+      err.response?.data?.message ||
+      err.message ||
+      'Request failed';
     return {
-      message: err.response?.data?.message || err.message || 'Request failed',
+      message,
       status: err.response?.status ?? null,
     };
   }
@@ -44,9 +51,11 @@ export const api = {
     }
   },
 
-  async getGraph({ patternId } = {}) {
+  async getGraph({ patternId, maxNodes, maxEdges } = {}) {
     try {
-      const { data } = await http.get('/api/graph', { params: { patternId } });
+      const { data } = await http.get('/api/graph', {
+        params: { patternId, maxNodes, maxEdges },
+      });
       return data;
     } catch (err) {
       throw toAppError(err);
@@ -62,9 +71,11 @@ export const api = {
     }
   },
 
-  async getAccountTimeline(accountId) {
+  async getAccountTimeline(accountId, { days } = {}) {
     try {
-      const { data } = await http.get(`/api/account/${accountId}/timeline`);
+      const { data } = await http.get(`/api/account/${accountId}/timeline`, {
+        params: { days },
+      });
       return data;
     } catch (err) {
       throw toAppError(err);
@@ -80,16 +91,23 @@ export const api = {
     }
   },
 
-  // Uploads a CSV of transactions. Backend parses it, builds the graph,
-  // runs detection, and returns the standard payload. Response shape should
-  // match what getSummary/getAccounts/getPatterns/getGraph return so the
-  // dashboard can render without a refetch.
-  async uploadTransactions(file, { name, institution } = {}) {
+  // Uploads CSV files. `transactions` is required; `accounts` is optional.
+  // Backend parses, rebuilds the graph, runs detection, replaces the cache,
+  // and returns { accountsCreated, transactionsCreated, warnings, generationTimeMs }.
+  //
+  // Accepts either:
+  //   { transactions: File, accounts: File | undefined }
+  // or a pre-built FormData via the `formData` option.
+  async uploadCsv({ transactions, accounts, formData } = {}) {
     try {
-      const form = new FormData();
-      form.append('file', file);
-      if (name) form.append('name', name);
-      if (institution) form.append('institution', institution);
+      let form;
+      if (formData instanceof FormData) {
+        form = formData;
+      } else {
+        form = new FormData();
+        if (transactions) form.append('transactions', transactions);
+        if (accounts) form.append('accounts', accounts);
+      }
       const { data } = await http.post('/api/upload', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
