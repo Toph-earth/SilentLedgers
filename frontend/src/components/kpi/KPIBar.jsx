@@ -21,7 +21,7 @@ export default function KPIBar({ onDataChanged }) {
   return (
     <header className="flex h-[72px] shrink-0 items-center justify-between gap-4 border-b border-ink-600 bg-ink-900 px-6">
       <div className="flex items-baseline gap-2">
-        <span className="font-serif text-xl text-parchment-100">Silent Ledger</span>
+        <span className="font-serif text-xl text-parchment-100">Silent Ledgers</span>
         <span className="hidden text-xs text-parchment-500 sm:inline">network view of transaction risk</span>
       </div>
 
