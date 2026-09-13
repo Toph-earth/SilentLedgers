@@ -102,7 +102,7 @@ LAYERING_CHAIN_LENGTH = 4           # 3 hops per chain
 ROUND_TRIPPING_RING_SIZE = 3        # 3 edges per cycle
 
 # Reporting threshold. Transactions below this are less scrutinized.
-REPORTING_THRESHOLD = 10_000.0
+from config import REPORTING_THRESHOLD
 
 # Currency for the whole dataset
 CURRENCY = "USD"
