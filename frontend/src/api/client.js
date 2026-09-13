@@ -91,13 +91,18 @@ export const api = {
     }
   },
 
+  async setConfig({ reportingThreshold }) {
+    try {
+      const { data } = await http.post('/api/config', { reportingThreshold });
+      return data;
+    } catch (err) {
+      throw toAppError(err);
+    }
+  },
+
   // Uploads CSV files. `transactions` is required; `accounts` is optional.
   // Backend parses, rebuilds the graph, runs detection, replaces the cache,
   // and returns { accountsCreated, transactionsCreated, warnings, generationTimeMs }.
-  //
-  // Accepts either:
-  //   { transactions: File, accounts: File | undefined }
-  // or a pre-built FormData via the `formData` option.
   async uploadCsv({ transactions, accounts, formData } = {}) {
     try {
       let form;
