@@ -15,15 +15,19 @@ function Stat({ label, value, accent }) {
   );
 }
 
-export default function KPIBar({ onDataChanged }) {
+export default function KPIBar({ onDataChanged, onNavigateHome }) {
   const { status, data, error, refetch } = useSummary();
 
   return (
     <header className="flex h-[72px] shrink-0 items-center justify-between gap-4 border-b border-ink-600 bg-ink-900 px-6">
-      <div className="flex items-baseline gap-2">
-        <span className="font-serif text-xl text-parchment-100">Silent Ledgers</span>
+      <button
+        onClick={onNavigateHome}
+        className="flex items-baseline gap-2 text-left transition-opacity hover:opacity-80"
+        title="Back to landing page"
+      >
+        <span className="font-serif text-xl text-parchment-100">SilentLegders</span>
         <span className="hidden text-xs text-parchment-500 sm:inline">network view of transaction risk</span>
-      </div>
+      </button>
 
       <div className="flex h-full items-center gap-6">
         {status === 'loading' && <LoadingState label="Loading summary" />}

@@ -7,7 +7,6 @@ import TransactionGraph from './components/graph/TransactionGraph.jsx';
 import TimelineChart from './components/timeline/TimelineChart.jsx';
 import AccountTable from './components/accounts/AccountTable.jsx';
 
-
 // Layout at 1280px (the demo resolution):
 //   header            1280 x 72,  fixed
 //   pattern list       260 wide,  fixed, own scroll, tabbed by pattern type
@@ -16,7 +15,7 @@ import AccountTable from './components/accounts/AccountTable.jsx';
 // See GUIDE.md section 3 for the derivation.
 
 export default function App() {
-  const [view, setView] = useState('dashboard'); // 'landing' | 'dashboard'
+  const [view, setView] = useState('landing'); // 'landing' | 'dashboard'
   const [selectedPatternId, setSelectedPatternId] = useState(null);
   const [selectedAccountId, setSelectedAccountId] = useState(null);
 

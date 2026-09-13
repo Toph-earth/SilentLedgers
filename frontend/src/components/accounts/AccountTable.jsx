@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import { useAccounts } from '../../hooks/useAccounts.js';
 import LoadingState from '../common/LoadingState.jsx';
 import ErrorState from '../common/ErrorState.jsx';
@@ -31,28 +32,41 @@ export default function AccountTable({ selectedAccountId, onSelectAccount, dataV
             </thead>
             <tbody>
               {data.map((a) => (
-                <tr
-                  key={a.id}
-                  onClick={() => onSelectAccount(a.id)}
-                  className={`cursor-pointer border-b border-ink-700 transition-colors hover:bg-ink-700 ${
-                    a.id === selectedAccountId ? 'bg-ink-700' : ''
-                  }`}
-                >
-                  <td className="px-4 py-2">
-                    <div className="font-mono text-parchment-100">{a.id}</div>
-                    <div className="truncate text-[11px] text-parchment-500">{a.name}</div>
-                  </td>
-                  <td className="px-2 py-2 text-[11px] text-parchment-500">
-                    {a.flagType ? a.flagType.replace('_', ' ') : '—'}
-                  </td>
-                  <td className="px-2 py-2 text-right font-mono text-[11px] text-parchment-300">
-                    {typeof a.netFlow === 'number' ? currency(a.netFlow) : '—'}
-                  </td>
-                  <td className={`px-2 py-2 text-right font-mono ${riskColorClass(a.riskScore)}`}>
-                    {a.riskScore}
-                    {a.flagged && <span className="ml-1">⚑</span>}
-                  </td>
-                </tr>
+                <Fragment key={a.id}>
+                  <tr
+                    onClick={() => onSelectAccount(a.id)}
+                    className={`cursor-pointer border-b border-ink-700 transition-colors hover:bg-ink-700 ${
+                      a.id === selectedAccountId ? 'bg-ink-700' : ''
+                    } ${a.mlExplanation ? 'border-b-0' : ''}`}
+                  >
+                    <td className="px-4 py-2">
+                      <div className="font-mono text-parchment-100">{a.id}</div>
+                      <div className="truncate text-[11px] text-parchment-500">{a.name}</div>
+                    </td>
+                    <td className="px-2 py-2 text-[11px] text-parchment-500">
+                      {a.flagType ? a.flagType.replace('_', ' ') : '—'}
+                    </td>
+                    <td className="px-2 py-2 text-right font-mono text-[11px] text-parchment-300">
+                      {typeof a.netFlow === 'number' ? currency(a.netFlow) : '—'}
+                    </td>
+                    <td className={`px-2 py-2 text-right font-mono ${riskColorClass(a.riskScore)}`}>
+                      {a.riskScore}
+                      {a.flagged && <span className="ml-1">⚑</span>}
+                    </td>
+                  </tr>
+                  {a.mlExplanation && (
+                    <tr
+                      onClick={() => onSelectAccount(a.id)}
+                      className={`cursor-pointer border-b border-ink-700 transition-colors hover:bg-ink-700 ${
+                        a.id === selectedAccountId ? 'bg-ink-700' : ''
+                      }`}
+                    >
+                      <td colSpan={4} className="px-4 pb-2 pt-0 text-[11px] italic leading-relaxed text-brass-400">
+                        {a.mlExplanation}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>
