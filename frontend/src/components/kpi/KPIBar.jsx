@@ -25,7 +25,7 @@ export default function KPIBar({ onDataChanged, onNavigateHome }) {
         className="flex items-baseline gap-2 text-left transition-opacity hover:opacity-80"
         title="Back to landing page"
       >
-        <span className="font-serif text-xl text-parchment-100">SilentLegders</span>
+        <span className="font-serif text-xl text-parchment-100">SilentLedgers</span>
         <span className="hidden text-xs text-parchment-500 sm:inline">network view of transaction risk</span>
       </button>
 
