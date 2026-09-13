@@ -14,6 +14,24 @@ const TYPE_LABEL = {
 // structuring first, then layering, then round-tripping.
 const TAB_ORDER = ['all', 'structuring', 'layering', 'round_tripping'];
 
+// Backend sends the explanation under either `mlExplanation` (singular string)
+// or `mlExplanations` (plural object/map). Handle both. When it's a map, use
+// only the first entry — the backend sometimes sends several near-identical
+// model blocks and joining them all makes the card unreadable.
+function getExplanation(pattern) {
+  if (typeof pattern.mlExplanation === 'string' && pattern.mlExplanation.trim()) {
+    return pattern.mlExplanation.trim();
+  }
+  const plural = pattern.mlExplanations;
+  if (plural && typeof plural === 'object') {
+    const parts = Object.values(plural).filter(
+      (v) => typeof v === 'string' && v.trim()
+    );
+    if (parts.length > 0) return parts[0].trim();
+  }
+  return null;
+}
+
 function CategoryTabs({ counts, activeTab, onChange }) {
   return (
     <div className="flex flex-wrap gap-1.5 border-b border-ink-600 px-3 py-2">
@@ -40,6 +58,8 @@ function CategoryTabs({ counts, activeTab, onChange }) {
 }
 
 function PatternCard({ pattern, selected, onSelect }) {
+  const explanation = getExplanation(pattern);
+
   return (
     <button
       onClick={() => onSelect(selected ? null : pattern.id)}
@@ -57,6 +77,13 @@ function PatternCard({ pattern, selected, onSelect }) {
         {pattern.label}
       </div>
       <p className="mt-1 text-xs leading-relaxed text-parchment-500">{pattern.summary}</p>
+
+      {selected && explanation && (
+        <p className="mt-2 border-l-2 border-brass-600 pl-2 text-[11px] italic leading-relaxed text-brass-400">
+          {explanation}
+        </p>
+      )}
+
       <div className="mt-2 font-mono text-[11px] text-parchment-500">
         {pattern.memberAccounts.length} accounts
       </div>
