@@ -17,9 +17,12 @@ import numpy as np
 import networkx as nx
 import shap
 import xgboost as xgb
+import joblib
+import os
 
 from models import Account
 
+MODEL_PATH = "/tmp/silent_ledger_model.pkl"
 
 FEATURE_NAMES = [
     "txn_count",
@@ -124,8 +127,15 @@ def fit_and_score(
 ) -> Tuple[Dict[str, float], Dict[str, str]]:
     """Returns (ml_scores, ml_explanations) keyed by account_id.
 
-    ml_scores are in [0, 1] (probability of laundering).
-    ml_explanations are one-sentence human-readable strings.
+    If a persisted model exists at MODEL_PATH, it is loaded and used to
+    score the new data without retraining. This is how the model runs on
+    unlabeled data: the model was already trained, labels are only
+    needed at training time.
+
+    If no persisted model exists, the function trains from scratch on
+    the generator's is_laundering labels. If those labels are absent or
+    degenerate, the function returns empty dicts and the pipeline
+    degrades to rule-only scoring.
     """
     _mark_cycles(G)
 
@@ -134,24 +144,43 @@ def fit_and_score(
         return {}, {}
 
     X = np.array([_features(G, a) for a in accounts if a.account_id in G])
-    y = np.array([int(a.is_laundering) for a in accounts if a.account_id in G])
 
-    if y.sum() == 0 or y.sum() == len(y):
-        return {}, {}
+    model = None
+    loaded_from_disk = False
 
-    model = xgb.XGBClassifier(
-        n_estimators=200,
-        max_depth=4,
-        learning_rate=0.1,
-        use_label_encoder=False,
-        eval_metric="logloss",
-        random_state=42,
-    )
-    model.fit(X, y)
+    # Try to load a persisted model. If present, skip training entirely.
+    if os.path.exists(MODEL_PATH):
+        try:
+            model = joblib.load(MODEL_PATH)
+            loaded_from_disk = True
+        except Exception as e:
+            print(f"Failed to load persisted model, will retrain: {e}")
+            model = None
+
+    # Train if no persisted model was found.
+    if model is None:
+        y = np.array([int(a.is_laundering) for a in accounts if a.account_id in G])
+        if y.sum() == 0 or y.sum() == len(y):
+            # No usable labels and no persisted model. Cannot score.
+            return {}, {}
+
+        model = xgb.XGBClassifier(
+            n_estimators=200,
+            max_depth=4,
+            learning_rate=0.1,
+            eval_metric="logloss",
+            random_state=42,
+        )
+        model.fit(X, y)
+
+        try:
+            joblib.dump(model, MODEL_PATH)
+            print(f"Trained and persisted model to {MODEL_PATH}")
+        except Exception as e:
+            print(f"Failed to persist model: {e}")
 
     probs = model.predict_proba(X)[:, 1]
 
-    # SHAP explanations
     explainer = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(X)
 
@@ -162,7 +191,6 @@ def fit_and_score(
         p = float(probs[i])
         scores[aid] = p
 
-        # Top 3 features by absolute SHAP value for this account.
         contribs = list(zip(FEATURE_NAMES, shap_values[i]))
         contribs.sort(key=lambda x: abs(x[1]), reverse=True)
         top = contribs[:3]
