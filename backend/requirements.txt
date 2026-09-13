@@ -23,5 +23,10 @@ networkx==3.3
 numpy==1.26.4
 pandas==2.2.2
 
+# --- For Model --------------------------------------------------------
+scikit-learn==1.5.2
+xgboost==2.1.1
+shap==0.46.0
+
 # --- Standard library backports --------------------------------------
 # (none required for Python 3.11+)
