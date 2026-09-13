@@ -1,44 +1,35 @@
 """
 main.py — FastAPI application for Silent Ledger.
 
-This file wires the pipeline together and exposes it over HTTP. The
-pipeline itself (generate or load -> build graph -> detect -> score ->
-cache) is factored into a single internal function `_run_pipeline`, so
-that /api/generate and /api/upload share exactly one code path. The two
-endpoints differ only in how they obtain (accounts, transactions,
-ground_truth); everything downstream is identical.
+Wires the pipeline together and exposes it over HTTP. The pipeline
+itself (generate or load -> build graph -> detect -> score -> cache) is
+factored into a single internal function `_run_pipeline`, so that
+/api/generate and /api/upload share exactly one code path.
 
-What this file does:
-  - Owns the in-memory cache (accounts, transactions, graph, matches,
-    risk scores, summary).
-  - Exposes 8 endpoints: /api/generate, /api/upload, /api/health,
-    /api/summary, /api/accounts, /api/graph, /api/patterns,
-    /api/account/{id}/timeline.
-  - Configures CORS so the Vercel frontend can reach Railway.
+Detectors produce PatternMatch objects (audit layer).
+ml_detector produces per-account probabilities (evasion-resistance layer).
+risk_scorer blends both into a single 0–100 risk score.
 
-What this file explicitly does NOT do:
+What this file does NOT do:
   - Detect patterns (detectors.py).
   - Score risk (risk_scorer.py).
+  - Train the model (ml_detector.py).
   - Parse CSVs (csv_loader.py).
   - Build graphs (graph_builder.py).
-  - Know anything about React Flow's layout.
 """
 
 from __future__ import annotations
 
 import time
-from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import networkx as nx
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 from models import (
     Account,
-    AccountType,
     PatternMatch,
     PatternType,
     RiskScore,
@@ -48,35 +39,69 @@ from csv_loader import CSVLoadError, load_from_csv
 from data_generator import generate_dataset
 from graph_builder import build_graph, export_subgraph
 
-# Detectors and scorer imports
-from detectors import (
+# --- Detectors --------------------------------------------------------------
+try:
+    from detectors import (
         detect_structuring,
         detect_layering,
         detect_round_tripping,
-        deduplicate_layering,
     )
-_DETECTORS_AVAILABLE = True
+    _DETECTORS_AVAILABLE = True
+except ImportError as e:
+    print(f"Detectors not available: {e}")
+    _DETECTORS_AVAILABLE = False
+
+# --- Risk scorer ------------------------------------------------------------
+try:
+    from risk_scorer import score_accounts
+    _SCORER_AVAILABLE = True
+except ImportError as e:
+    print(f"Risk scorer not available: {e}")
+    _SCORER_AVAILABLE = False
+
+# --- ML detector ------------------------------------------------------------
+try:
+    from ml_detector import fit_and_score as ml_fit_and_score
+    _ML_AVAILABLE = True
+except ImportError as e:
+    print(f"ML detector not available: {e}")
+    _ML_AVAILABLE = False
 
 
-from risk_scorer import score_accounts
-_SCORER_AVAILABLE = True
+# ---------------------------------------------------------------------------
+# Application setup
+# ---------------------------------------------------------------------------
+
+app = FastAPI(title="Silent Ledger", version="0.2.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # tighten after the hackathon
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ---------------------------------------------------------------------------
 # In-memory cache
 # ---------------------------------------------------------------------------
+
 _CACHE: Dict[str, object] = {
-    "accounts": [],              # List[Account]
-    "transactions": [],          # List[Transaction]
-    "graph": None,               # nx.MultiDiGraph
-    "matches": [],               # List[PatternMatch]
-    "risk_by_account": {},       # Dict[str, RiskScore]
-    "matches_by_account": {},    # Dict[str, List[PatternMatch]]
-    "summary": None,             # precomputed summary dict
-    "patterns_indexed": {},      # Dict[str, PatternMatch] for /api/graph?patternId=
-    "generated_at": None,        # datetime
-    "source": None,              # "generated" | "uploaded"
-    "warnings": [],              # List[str] from CSV load
+    "accounts": [],
+    "transactions": [],
+    "graph": None,
+    "matches": [],
+    "risk_by_account": {},
+    "matches_by_account": {},
+    "ml_scores": {},
+    "ml_explanations": {},
+    "summary": None,
+    "patterns_indexed": {},
+    "generated_at": None,
+    "source": None,
+    "warnings": [],
+    "ml_active": False,
 }
 
 
@@ -89,50 +114,16 @@ def _cache_set(**kwargs) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Application lifespan & setup
+# Pipeline helpers
 # ---------------------------------------------------------------------------
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Populate the cache on boot before processing any incoming HTTP requests."""
-    accounts, transactions, ground_truth = generate_dataset()
-    _run_pipeline(
-        accounts=accounts,
-        transactions=transactions,
-        ground_truth=ground_truth,
-        source="generated",
-    )
-    yield
-    _CACHE.clear()
-
-
-app = FastAPI(title="Silent Ledger", version="0.1.0", lifespan=lifespan)
-
-# CORS: allow the Vercel frontend to reach Railway.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ---------------------------------------------------------------------------
-# Pipeline (shared by /api/generate and /api/upload)
-# ---------------------------------------------------------------------------
-
-def _build_patterns_index(
-    matches: List[PatternMatch],
-) -> Dict[str, PatternMatch]:
-    """Index matches by match_id for fast lookup in /api/graph?patternId=."""
+def _build_patterns_index(matches: List[PatternMatch]) -> Dict[str, PatternMatch]:
     return {m.match_id: m for m in matches}
 
 
 def _build_matches_by_account(
     matches: List[PatternMatch],
 ) -> Dict[str, List[PatternMatch]]:
-    """Group matches by every account involved, for /api/explain and scoring."""
     by_account: Dict[str, List[PatternMatch]] = {}
     for m in matches:
         for acc_id in m.accounts_involved:
@@ -140,25 +131,36 @@ def _build_matches_by_account(
     return by_account
 
 
-def _fallback_score(
-    account: Account,
-    matches: List[PatternMatch],
-    G: Optional[nx.MultiDiGraph],
-) -> RiskScore:
-    """Fallback scorer if risk_scorer.py is unavailable."""
-    if not matches:
-        return RiskScore(
-            account_id=account.account_id,
-            score=0,
-            contributing_matches=[],
+def _fallback_scorer(
+    accounts: List[Account],
+    matches_by_account: Dict[str, List[PatternMatch]],
+    G: nx.MultiDiGraph,
+    ml_scores: Optional[Dict[str, float]] = None,
+) -> Dict[str, RiskScore]:
+    """Minimal scorer used only if risk_scorer.py is missing.
+
+    Mirrors the shape of risk_scorer.score_accounts so downstream code
+    does not have to branch. Does not apply centrality, does not blend
+    ML. If you see this in production, risk_scorer.py failed to import.
+    """
+    out: Dict[str, RiskScore] = {}
+    ml_scores = ml_scores or {}
+    for acc in accounts:
+        acc_matches = matches_by_account.get(acc.account_id, [])
+        rule = min(100.0, sum(m.severity for m in acc_matches) * 100.0)
+        ml = float(ml_scores.get(acc.account_id, 0.0)) * 100.0
+        blended = 0.6 * rule + 0.4 * ml if acc.account_id in ml_scores else rule
+        out[acc.account_id] = RiskScore(
+            account_id=acc.account_id,
+            score=int(round(blended)),
+            contributing_matches=[m.match_id for m in acc_matches],
         )
-    weighted = sum(m.severity for m in matches)
-    score = int(min(100, round(weighted * 40)))
-    return RiskScore(
-        account_id=account.account_id,
-        score=score,
-        contributing_matches=[m.match_id for m in matches],
-    )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Pipeline
+# ---------------------------------------------------------------------------
 
 def _run_pipeline(
     accounts: List[Account],
@@ -167,51 +169,53 @@ def _run_pipeline(
     source: str,
     warnings: Optional[List[str]] = None,
 ) -> Dict[str, object]:
-    """Build graph, run detectors, score risk, and populate the cache atomically."""
+    """Build graph, run detectors, fit ML model, score, and cache."""
     warnings = warnings or []
 
-    # 1. Build the graph.
+    # 1. Graph
     G = build_graph(transactions)
 
-    # 2. Run detectors if available.
+    # 2. Rule detectors
     matches: List[PatternMatch] = []
     if _DETECTORS_AVAILABLE:
-        structuring_matches = detect_structuring(G)
-        round_tripping_matches = detect_round_tripping(G)
-        layering_matches = deduplicate_layering(
-            detect_layering(G), round_tripping_matches
+        matches = (
+            detect_structuring(G)
+            + detect_layering(G)
+            + detect_round_tripping(G)
         )
-        matches = structuring_matches + layering_matches + round_tripping_matches
-    print(
-        f"DEBUG detectors: _DETECTORS_AVAILABLE={_DETECTORS_AVAILABLE}  "
-        f"structuring={len(matches) and len(structuring_matches)}  "
-        f"layering={len(matches) and len(layering_matches)}  "
-        f"round_tripping={len(matches) and len(round_tripping_matches)}  "
-        f"total={len(matches)}",
-        flush=True,
-    )
 
-    # 3. Group matches by account.
     matches_by_account = _build_matches_by_account(matches)
 
-    # 4. Score risk per account.
-    risk_by_account: Dict[str, RiskScore] = {}
-    if _SCORER_AVAILABLE:
-        risk_by_account = score_accounts(accounts, matches_by_account, G)
-    else:
-        for acc in accounts:
-            risk_by_account[acc.account_id] = _fallback_score(
-                acc, matches_by_account.get(acc.account_id, []), G
-            )
+    # 3. ML detector (augment only; fails gracefully)
+    ml_scores: Dict[str, float] = {}
+    ml_explanations: Dict[str, str] = {}
+    ml_active = False
+    if _ML_AVAILABLE:
+        try:
+            ml_scores, ml_explanations = ml_fit_and_score(accounts, G)
+            ml_active = bool(ml_scores)
+        except Exception as e:
+            print(f"ML detector failed at runtime, continuing without it: {e}")
+            ml_scores, ml_explanations = {}, {}
+            ml_active = False
 
-    # 5. Precompute the summary KPI metrics.
+    # 4. Risk scoring (blends rule + ML)
+    if _SCORER_AVAILABLE:
+        risk_by_account = score_accounts(
+            accounts, matches_by_account, G, ml_scores=ml_scores
+        )
+    else:
+        risk_by_account = _fallback_scorer(
+            accounts, matches_by_account, G, ml_scores=ml_scores
+        )
+
+    # 5. Summary
     summary = _compute_summary(accounts, matches, risk_by_account, transactions)
 
-    # 6. Index patterns for fast graph lookups.
+    # 6. Patterns index
     patterns_indexed = _build_patterns_index(matches)
 
-    # 7. Atomic update into the global cache.
-    generated_at = datetime.now(timezone.utc)
+    # 7. Atomic cache swap
     _cache_set(
         accounts=accounts,
         transactions=transactions,
@@ -219,11 +223,14 @@ def _run_pipeline(
         matches=matches,
         risk_by_account=risk_by_account,
         matches_by_account=matches_by_account,
+        ml_scores=ml_scores,
+        ml_explanations=ml_explanations,
         summary=summary,
         patterns_indexed=patterns_indexed,
-        generated_at=generated_at,
+        generated_at=datetime.now(timezone.utc),
         source=source,
         warnings=warnings,
+        ml_active=ml_active,
     )
 
     return {
@@ -233,17 +240,12 @@ def _run_pipeline(
     }
 
 
-# ---------------------------------------------------------------------------
-# Summary precomputation
-# ---------------------------------------------------------------------------
-
 def _compute_summary(
     accounts: List[Account],
     matches: List[PatternMatch],
     risk_by_account: Dict[str, RiskScore],
     transactions: List[Transaction],
 ) -> dict:
-    """Precompute the KPI strip. Runs once per pipeline run."""
     flagged_ids = {
         acc_id
         for acc_id, rs in risk_by_account.items()
@@ -267,16 +269,16 @@ def _compute_summary(
         "totalFlaggedVolume30d": round(volume_30d, 2),
         "highestRiskScore": int(highest),
         "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "mlActive": bool(_CACHE.get("ml_active", False)),
     }
 
 
 # ---------------------------------------------------------------------------
-# Endpoint: POST /api/generate
+# POST /api/generate
 # ---------------------------------------------------------------------------
 
 @app.post("/api/generate")
 def api_generate():
-    """Regenerate the synthetic dataset and rebuild the pipeline."""
     t0 = time.perf_counter()
     accounts, transactions, ground_truth = generate_dataset()
     result = _run_pipeline(
@@ -285,13 +287,12 @@ def api_generate():
         ground_truth=ground_truth,
         source="generated",
     )
-    elapsed_ms = int((time.perf_counter() - t0) * 1000)
-    result["generationTimeMs"] = elapsed_ms
+    result["generationTimeMs"] = int((time.perf_counter() - t0) * 1000)
     return result
 
 
 # ---------------------------------------------------------------------------
-# Endpoint: POST /api/upload
+# POST /api/upload
 # ---------------------------------------------------------------------------
 
 @app.post("/api/upload")
@@ -299,7 +300,6 @@ async def api_upload(
     transactions: UploadFile = File(...),
     accounts: Optional[UploadFile] = File(default=None),
 ):
-    """Load a user-uploaded CSV pair and rebuild the pipeline."""
     t0 = time.perf_counter()
 
     try:
@@ -327,37 +327,32 @@ async def api_upload(
     except CSVLoadError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    warnings: List[str] = []
-
     result = _run_pipeline(
         accounts=accounts_obj,
         transactions=transactions_obj,
         ground_truth=ground_truth,
         source="uploaded",
-        warnings=warnings,
+        warnings=[],
     )
-    elapsed_ms = int((time.perf_counter() - t0) * 1000)
-    result["generationTimeMs"] = elapsed_ms
+    result["generationTimeMs"] = int((time.perf_counter() - t0) * 1000)
     return result
 
 
 # ---------------------------------------------------------------------------
-# Endpoint: GET /api/health
+# GET /api/health
 # ---------------------------------------------------------------------------
 
 @app.get("/api/health")
 def api_health():
-    """Railway health check target."""
     return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
-# Endpoint: GET /api/summary
+# GET /api/summary
 # ---------------------------------------------------------------------------
 
 @app.get("/api/summary")
 def api_summary():
-    """Return the precomputed KPI strip."""
     summary = _cache_get("summary")
     if summary is None:
         raise HTTPException(
@@ -368,12 +363,11 @@ def api_summary():
 
 
 # ---------------------------------------------------------------------------
-# Endpoint: GET /api/accounts
+# GET /api/accounts
 # ---------------------------------------------------------------------------
 
 @app.get("/api/accounts")
 def api_accounts(minRisk: Optional[int] = Query(default=None, ge=0, le=100)):
-    """Return the account table, sorted by risk score descending."""
     accounts: List[Account] = _cache_get("accounts")  # type: ignore
     if not accounts:
         raise HTTPException(
@@ -383,9 +377,12 @@ def api_accounts(minRisk: Optional[int] = Query(default=None, ge=0, le=100)):
 
     risk_by_account: Dict[str, RiskScore] = _cache_get("risk_by_account")  # type: ignore
     matches_by_account: Dict[str, List[PatternMatch]] = _cache_get("matches_by_account")  # type: ignore
+    ml_scores: Dict[str, float] = _cache_get("ml_scores")  # type: ignore
+    ml_explanations: Dict[str, str] = _cache_get("ml_explanations")  # type: ignore
     graph: nx.MultiDiGraph = _cache_get("graph")  # type: ignore
 
     out: List[dict] = []
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
 
     for acc in accounts:
         rs = risk_by_account.get(
@@ -407,6 +404,9 @@ def api_accounts(minRisk: Optional[int] = Query(default=None, ge=0, le=100)):
             best = max(acc_matches, key=lambda m: m.severity)
             flag_type = best.pattern_type
 
+        ml_prob = ml_scores.get(acc.account_id)
+        ml_score_int = int(round(ml_prob * 100)) if ml_prob is not None else None
+
         out.append(
             {
                 "id": acc.account_id,
@@ -418,6 +418,8 @@ def api_accounts(minRisk: Optional[int] = Query(default=None, ge=0, le=100)):
                 "flagType": flag_type.value if flag_type else None,
                 "netFlow": round(net_flow, 2),
                 "txnCount": txn_count,
+                "mlScore": ml_score_int,
+                "mlExplanation": ml_explanations.get(acc.account_id, ""),
             }
         )
 
@@ -426,7 +428,7 @@ def api_accounts(minRisk: Optional[int] = Query(default=None, ge=0, le=100)):
 
 
 # ---------------------------------------------------------------------------
-# Endpoint: GET /api/graph
+# GET /api/graph
 # ---------------------------------------------------------------------------
 
 @app.get("/api/graph")
@@ -435,7 +437,6 @@ def api_graph(
     maxNodes: int = Query(default=50, ge=5, le=200),
     maxEdges: int = Query(default=150, ge=5, le=500),
 ):
-    """Return the graph in React Flow shape."""
     graph: nx.MultiDiGraph = _cache_get("graph")  # type: ignore
     if graph is None or graph.number_of_nodes() == 0:
         raise HTTPException(
@@ -479,10 +480,7 @@ def api_graph(
             "id": n["id"],
             "type": "risk",
             "position": {"x": 0, "y": 0},
-            "data": {
-                "label": n["label"],
-                "risk": n["risk"],
-            },
+            "data": {"label": n["label"], "risk": n["risk"]},
         }
         for n in payload["nodes"]
     ]
@@ -491,10 +489,7 @@ def api_graph(
             "id": f"{e['source']}->{e['target']}",
             "source": e["source"],
             "target": e["target"],
-            "data": {
-                "amount": e["amount"],
-                "timestamp": e["timestamp"],
-            },
+            "data": {"amount": e["amount"], "timestamp": e["timestamp"]},
         }
         for e in payload["edges"]
     ]
@@ -512,22 +507,29 @@ def api_graph(
 
 
 # ---------------------------------------------------------------------------
-# Endpoint: GET /api/patterns
+# GET /api/patterns
 # ---------------------------------------------------------------------------
 
 @app.get("/api/patterns")
 def api_patterns():
-    """Return every detected pattern, sorted by risk score descending."""
     matches: List[PatternMatch] = _cache_get("matches")  # type: ignore
     risk_by_account: Dict[str, RiskScore] = _cache_get("risk_by_account")  # type: ignore
+    ml_explanations: Dict[str, str] = _cache_get("ml_explanations")  # type: ignore
 
     rows: List[dict] = []
     for m in matches:
         member_scores = [
-            risk_by_account.get(acc_id, RiskScore(account_id=acc_id, score=0, contributing_matches=[])).score
+            risk_by_account.get(
+                acc_id,
+                RiskScore(account_id=acc_id, score=0, contributing_matches=[]),
+            ).score
             for acc_id in m.accounts_involved
         ]
-        pattern_risk = int(round(sum(member_scores) / len(member_scores))) if member_scores else 0
+        pattern_risk = (
+            int(round(sum(member_scores) / len(member_scores)))
+            if member_scores
+            else 0
+        )
 
         rows.append(
             {
@@ -538,6 +540,11 @@ def api_patterns():
                 "riskScore": pattern_risk,
                 "memberAccounts": list(m.accounts_involved),
                 "detectedAt": m.window_end.isoformat(),
+                "mlExplanations": {
+                    acc_id: ml_explanations[acc_id]
+                    for acc_id in m.accounts_involved
+                    if acc_id in ml_explanations
+                },
             }
         )
 
@@ -546,7 +553,6 @@ def api_patterns():
 
 
 def _human_label_for(m: PatternMatch) -> str:
-    """Short display label for a pattern row in the sidebar."""
     if m.pattern_type == PatternType.STRUCTURING:
         return f"Structuring ring via {m.accounts_involved[0]}"
     if m.pattern_type == PatternType.LAYERING:
@@ -557,12 +563,14 @@ def _human_label_for(m: PatternMatch) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Endpoint: GET /api/account/{id}/timeline
+# GET /api/account/{id}/timeline
 # ---------------------------------------------------------------------------
 
 @app.get("/api/account/{account_id}/timeline")
-def api_account_timeline(account_id: str, days: int = Query(default=30, ge=1, le=180)):
-    """Daily volume and transaction count for a single account."""
+def api_account_timeline(
+    account_id: str,
+    days: int = Query(default=30, ge=1, le=180),
+):
     graph: nx.MultiDiGraph = _cache_get("graph")  # type: ignore
     if graph is None or graph.number_of_nodes() == 0:
         raise HTTPException(
@@ -614,3 +622,18 @@ def api_account_timeline(account_id: str, days: int = Query(default=30, ge=1, le
     ]
 
     return {"accountId": account_id, "points": points}
+
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+def _startup_generate():
+    accounts, transactions, ground_truth = generate_dataset()
+    _run_pipeline(
+        accounts=accounts,
+        transactions=transactions,
+        ground_truth=ground_truth,
+        source="generated",
+    )
