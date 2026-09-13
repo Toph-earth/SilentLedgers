@@ -21,6 +21,7 @@ import joblib
 import os
 
 from models import Account
+from config import REPORTING_THRESHOLD
 
 MODEL_PATH = "/tmp/silent_ledger_model.pkl"
 
@@ -49,7 +50,7 @@ def _features(G: nx.MultiDiGraph, acc: Account) -> List[float]:
     in_edges = list(G.in_edges(aid, data=True))
     out_edges = list(G.out_edges(aid, data=True))
 
-    sub_lo, sub_hi = 0.80 * 10_000, 0.99 * 10_000
+    sub_lo, sub_hi = 0.80 * REPORTING_THRESHOLD, 0.99 * REPORTING_THRESHOLD
     sub_in = [
         attrs for _, _, attrs in in_edges
         if sub_lo <= float(attrs.get("amount", 0)) <= sub_hi

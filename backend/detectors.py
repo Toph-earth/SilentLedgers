@@ -117,6 +117,7 @@ from typing import Dict, List, Optional, Set, Tuple
 import networkx as nx
 
 from models import PatternMatch, PatternType
+from config import REPORTING_THRESHOLD
 
 
 # ===========================================================================
@@ -226,7 +227,7 @@ def detect_structuring(G: nx.MultiDiGraph) -> List[PatternMatch]:
     # Reporting threshold as a module-local constant. Same value as
     # data_generator.REPORTING_THRESHOLD, but we do not import from the
     # generator — detectors should not depend on generator internals.
-    THRESHOLD = 10_000.0
+    THRESHOLD = REPORTING_THRESHOLD
     lo = THRESHOLD * STRUCTURING_THRESHOLD_MIN_RATIO
     hi = THRESHOLD * STRUCTURING_THRESHOLD_MAX_RATIO
 

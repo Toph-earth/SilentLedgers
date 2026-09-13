@@ -19,6 +19,8 @@ What this file does NOT do:
 """
 
 from __future__ import annotations
+from pydantic import BaseModel
+import config
 
 import time
 from datetime import datetime, timedelta, timezone
@@ -38,6 +40,7 @@ from models import (
 from csv_loader import CSVLoadError, load_from_csv
 from data_generator import generate_dataset
 from graph_builder import build_graph, export_subgraph
+
 
 # --- Detectors --------------------------------------------------------------
 try:
@@ -63,7 +66,7 @@ except ImportError as e:
 try:
     from ml_detector import fit_and_score as ml_fit_and_score
     _ML_AVAILABLE = True
-except ImportError as e:
+except Exception as e:
     print(f"ML detector not available: {e}")
     _ML_AVAILABLE = False
 
@@ -279,6 +282,7 @@ def _compute_summary(
 
 @app.post("/api/generate")
 def api_generate():
+    print(f"ML available: {_ML_AVAILABLE}, detector available: {_DETECTORS_AVAILABLE}")
     t0 = time.perf_counter()
     accounts, transactions, ground_truth = generate_dataset()
     result = _run_pipeline(
@@ -622,6 +626,66 @@ def api_account_timeline(
     ]
 
     return {"accountId": account_id, "points": points}
+
+# --------------------------------------------------------------------------
+# config
+# --------------------------------------------------------------------------
+
+class ConfigUpdate(BaseModel):
+    reportingThreshold: Optional[float] = None
+    flagThreshold: Optional[int] = None
+
+
+@app.get("/api/config")
+def api_get_config():
+    """Return the current runtime configuration."""
+    return {
+        "reportingThreshold": config.REPORTING_THRESHOLD,
+        "flagThreshold": config.FLAG_THRESHOLD,
+        "ruleWeight": config.RULE_WEIGHT,
+        "mlWeight": config.ML_WEIGHT,
+    }
+
+
+@app.post("/api/config")
+def api_set_config(update: ConfigUpdate):
+    """Update runtime configuration and re-run the pipeline.
+
+    Changing the reporting threshold changes which transactions count as
+    'just below threshold' for structuring detection, and which count as
+    suspicious for the ML feature extraction. Re-running the pipeline is
+    required for the change to take effect.
+    """
+    if update.reportingThreshold is not None:
+        if update.reportingThreshold <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="reportingThreshold must be positive.",
+            )
+        config.REPORTING_THRESHOLD = float(update.reportingThreshold)
+
+    if update.flagThreshold is not None:
+        if not (0 <= update.flagThreshold <= 100):
+            raise HTTPException(
+                status_code=400,
+                detail="flagThreshold must be between 0 and 100.",
+            )
+        config.FLAG_THRESHOLD = int(update.flagThreshold)
+
+    # Re-run the pipeline so the new config takes effect.
+    accounts, transactions, ground_truth = generate_dataset()
+    _run_pipeline(
+        accounts=accounts,
+        transactions=transactions,
+        ground_truth=ground_truth,
+        source="generated",
+    )
+
+    return {
+        "status": "ok",
+        "reportingThreshold": config.REPORTING_THRESHOLD,
+        "flagThreshold": config.FLAG_THRESHOLD,
+    }
 
 
 # ---------------------------------------------------------------------------
